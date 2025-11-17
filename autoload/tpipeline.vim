@@ -5,14 +5,10 @@ endif
 let s:exit_code = -1
 
 func tpipeline#get_filepath()
-	" e.g. /tmp/tmux-1000/default-$0-vimbridge
-	let tmux = $TMUX
-	if empty(tmux)
-		let p = "/tmp/tmux-" . systemlist("id -u")[-1]
-		silent! call mkdir(p)
-		let tmux = p . "/default,0,0"
-	endif
-	return strcharpart(tmux, 0, stridx(tmux, ",")) . '-$' . strcharpart(tmux, strridx(tmux, ",") + 1) . '-vimbridge'
+  " Env var should exist due to check @ plugin/tpipeline.vim
+  let dir = '/tmp/vim-tpipeline/' . $ZELLIJ_SESSION_NAME . '/'
+  silent! call mkdir(dir, 'p')
+  return dir . 'vimbridge'
 endfunc
 
 func tpipeline#build_hooks()
@@ -82,7 +78,7 @@ func tpipeline#initialize()
 		endif
 	endif
 	if !exists('g:tpipeline_refreshcmd')
-		let g:tpipeline_refreshcmd = 'tmux refresh-client -S'
+		let g:tpipeline_refreshcmd = ''
 	endif
 	if !exists('g:tpipeline_clearstl')
 		let g:tpipeline_clearstl = 0
@@ -129,9 +125,6 @@ func tpipeline#initialize()
 		if exists('#User#TpipelineSize')
 			call tpipeline#util#set_custom_size()
 			au VimResized * call tpipeline#util#set_custom_size()
-		elseif !exists('g:tpipeline_size')
-			call tpipeline#util#set_size()
-			au VimResized * call tpipeline#util#set_size()
 		endif
 		au UIEnter * call tpipeline#util#check_gui()
 	endif
@@ -169,34 +162,13 @@ func tpipeline#exit_cb(job, code)
 endfunc
 
 func tpipeline#fork_job()
-	if g:tpipeline_restore
-		let s:restore_left = systemlist("sh -c 'echo \"\"; tmux display-message -p \"#{status-left}\"'")[-1]
-		let s:restore_right = systemlist("sh -c 'echo \"\"; tmux display-message -p \"#{status-right}\"'")[-1]
-	endif
 	let script = printf("export IFS='$\\n'; while read -r l; do%s", g:tpipeline_split ? " read -r r;" : "")
 	let script .= printf(" while read -t 0 _; do read -r l%s; done", g:tpipeline_split ? "; read -r r" : "") " batch updates
 	let script .= printf("; echo \"$l\" > '%s'%s", s:tpipeline_filepath, g:tpipeline_split ? printf("; echo \"$r\" > '%s'", s:tpipeline_right_filepath) : "")
-	if g:tpipeline_usepane
-		" end early if file was truncated so as not to overwrite any titles of panes we may switch to
-		let script .= "; if [ -z \"$l\" ]; then continue; fi"
-	endif
-	if g:tpipeline_autoembed
-		for o in g:tpipeline_embedopts
-			let script = 'tmux set ' . o . '; ' . script
-		endfor
-	endif
-	if g:tpipeline_fillcentre
-		let script .= "; C=$(echo \"$l\" | grep -o 'bg=#[0-9a-f]\\{6\\}'| tail -1)"
-		if !g:tpipeline_usepane
-			let script .= "; tmux set status-style \"$C\""
-		endif
-	endif
-	if g:tpipeline_usepane
-		let script .= "; tmux select-pane -t \"$TMUX_PANE\" -T \"#[fill=${C:3}]#[align=left]$l#[align=right]$r\""
-	endif
-	let script .= "; " . g:tpipeline_refreshcmd . "; done"
+	let script .= "; done"
 
 	let command = ['bash', '-c', script]
+
 	if s:is_nvim
 		let s:elines = ['']
 		let options = #{on_stderr: function('tpipeline#on_stderr'), on_exit: function('tpipeline#on_exit')}
@@ -206,6 +178,11 @@ func tpipeline#fork_job()
 		let options = #{noblock: 1, err_cb: function('tpipeline#err_cb'), exit_cb: function('tpipeline#exit_cb')}
 		let s:job = job_start(command, options)
 		let s:channel = job_getchannel(s:job)
+	endif
+
+	if exists('#User#TpipelineJobForked')
+    " Can run embed logic now
+		doautocmd User TpipelineJobForked
 	endif
 endfunc
 
@@ -273,39 +250,21 @@ func tpipeline#update()
 	endif
 endfunc
 
-func tpipeline#restore_tmux()
-	call system('tmux set status-left ' . shellescape(s:restore_left))
-	if g:tpipeline_split
-		call system('tmux set status-right ' . shellescape(s:restore_right))
-	endif
-endfunc
-
 func tpipeline#cleanup()
-	if g:tpipeline_restore
-		call tpipeline#restore_tmux()
+	if s:is_nvim
+		call jobstop(s:job)
 	else
-		if s:is_nvim
-			call jobstop(s:job)
-		else
-			call job_stop(s:job)
-		endif
-		call tpipeline#state#freeze()
-		call writefile([''], s:tpipeline_filepath, '')
-		if g:tpipeline_split
-			call writefile([''], s:tpipeline_right_filepath, '')
-		endif
-		call system('tmux refresh-client -S')
+		call job_stop(s:job)
+	endif
+	call tpipeline#state#freeze()
+	call writefile([''], s:tpipeline_filepath, '')
+	if g:tpipeline_split
+		call writefile([''], s:tpipeline_right_filepath, '')
 	endif
 endfunc
 
 func tpipeline#forceupdate()
 	let s:needs_cleanup = 0
-	if g:tpipeline_restore
-		call system("tmux set status-left '#(cat #{socket_path}-\\#{session_id}-vimbridge)'")
-		if g:tpipeline_split
-			call system("tmux set status-right '#(cat #{socket_path}-\\#{session_id}-vimbridge-R)'")
-		endif
-	endif
 	let s:last_statusline = ''
 	call tpipeline#update()
 endfunc
@@ -324,14 +283,10 @@ func tpipeline#cautious_cleanup()
 	endif
 
 	if s:last_writtenline ==# written_line
-		if g:tpipeline_restore
-			call tpipeline#restore_tmux()
+		if s:is_nvim
+			call chansend(s:channel, s:clear_stream)
 		else
-			if s:is_nvim
-				call chansend(s:channel, s:clear_stream)
-			else
-				call ch_sendraw(s:channel, s:clear_stream)
-			endif
+			call ch_sendraw(s:channel, s:clear_stream)
 		endif
 	endif
 endfunc
