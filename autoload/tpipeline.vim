@@ -5,10 +5,10 @@ endif
 let s:exit_code = -1
 
 func tpipeline#get_filepath()
-  " Env var should exist due to check @ plugin/tpipeline.vim
-  let dir = '/tmp/vim-tpipeline/' . $ZELLIJ_SESSION_NAME . '/'
-  silent! call mkdir(dir, 'p')
-  return dir . 'vimbridge'
+	" Env var should exist due to check @ plugin/tpipeline.vim
+	let dir = '/tmp/vim-tpipeline/' . $ZELLIJ_SESSION_NAME . '/'
+	silent! call mkdir(dir, 'p')
+	return dir . 'vimbridge'
 endfunc
 
 func tpipeline#build_hooks()
@@ -19,15 +19,26 @@ func tpipeline#build_hooks()
 			au FocusLost * call tpipeline#deferred_cleanup()
 		endif
 		au VimLeavePre * call tpipeline#cleanup()
-		au BufEnter,InsertLeave,CursorHold,CursorHoldI * call tpipeline#update()
-		if s:has_modechgd
-			au ModeChanged *:[^c]* call tpipeline#update()
-			au CmdlineEnter * call tpipeline#update()
+
+		if type(g:tpipeline_update_events) == v:t_list
+			for ev in g:tpipeline_update_events
+				if ev =~# '\s'
+					execute 'au ' . ev . ' call timer_start(0, {-> tpipeline#update()})'
+				else
+					execute 'au ' . ev . ' call timer_start(0, {-> tpipeline#update()})'
+				endif
+			endfor
 		else
-			au InsertEnter,CmdlineEnter,CmdlineLeave * call tpipeline#update()
-		endif
-		if g:tpipeline_cursormoved
-			au CursorMoved * call tpipeline#update()
+			au BufEnter,InsertLeave,CursorHold,CursorHoldI * call tpipeline#update()
+			if s:has_modechgd
+				au ModeChanged *:[^c]* call tpipeline#update()
+				au CmdlineEnter * call tpipeline#update()
+			else
+				au InsertEnter,CmdlineEnter,CmdlineLeave * call tpipeline#update()
+			endif
+			if g:tpipeline_cursormoved
+				au CursorMoved * call tpipeline#update()
+			endif
 		endif
 
 		if empty(g:tpipeline_statusline) && !g:tpipeline_tabline
@@ -44,6 +55,8 @@ func tpipeline#build_hooks()
 endfunc
 
 func tpipeline#initialize()
+	let s:has_modechgd = exists('##ModeChanged')
+
 	if !exists('g:tpipeline_statusline')
 		let g:tpipeline_statusline = ''
 	endif
@@ -55,6 +68,27 @@ func tpipeline#initialize()
 	endif
 	if !exists('g:tpipeline_cursormoved')
 		let g:tpipeline_cursormoved = 1
+	endif
+	if !exists('g:tpipeline_update_events')
+		let g:tpipeline_update_events = [
+			\ 'BufEnter',
+			\ 'InsertLeave',
+			\ 'CursorHold',
+			\ 'CursorHoldI',
+			\ ]
+
+		if s:has_modechgd
+			call add(g:tpipeline_update_events, 'ModeChanged *:[^c]*')
+			call add(g:tpipeline_update_events, 'CmdlineEnter')
+		else
+			call add(g:tpipeline_update_events, 'InsertEnter')
+			call add(g:tpipeline_update_events, 'CmdlineEnter')
+			call add(g:tpipeline_update_events, 'CmdlineLeave')
+		endif
+
+		if g:tpipeline_cursormoved
+			call add(g:tpipeline_update_events, 'CursorMoved')
+		endif
 	endif
 	if !exists('g:tpipeline_tabline')
 		let g:tpipeline_tabline = 0
@@ -117,7 +151,6 @@ func tpipeline#initialize()
 	let s:needs_cleanup = 0
 
 	let s:is_nvim = has('nvim')
-	let s:has_modechgd = exists('##ModeChanged')
 
 	if s:is_nvim
 		let g:tpipeline_fillchar = ""
@@ -181,7 +214,7 @@ func tpipeline#fork_job()
 	endif
 
 	if exists('#User#TpipelineJobForked')
-    " Can run embed logic now
+		" Can run embed logic now
 		doautocmd User TpipelineJobForked
 	endif
 endfunc
